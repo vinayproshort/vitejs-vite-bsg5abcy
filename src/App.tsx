@@ -43,13 +43,8 @@ const PRIORITY_COLORS = {
 const PRIORITY_ORDER = { Critical: 0, High: 1, Medium: 2, Low: 3 };
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
-const defaultRequests = [
-  { id: generateId(), title: 'Login button broken on mobile', customer: 'Acme Corp', slackChannel: '#support-acme', assignee: 'Vinay Raghavendran', status: 'In Progress', priority: 'Critical', due: new Date(Date.now() + 86400000).toISOString().split('T')[0], created: new Date(Date.now() - 3600000 * 5).toISOString(), notes: 'Reproducible on iOS Safari. Dev team notified.', source: 'manual' },
-  { id: generateId(), title: 'Need bulk export feature for invoices', customer: 'Globex Inc', slackChannel: '#support-globex', assignee: 'Rahul Aggarwal', status: 'New', priority: 'Medium', due: new Date(Date.now() + 86400000 * 5).toISOString().split('T')[0], created: new Date(Date.now() - 3600000 * 2).toISOString(), notes: '', source: 'slack' },
-  { id: generateId(), title: 'Billing cycle showing wrong dates', customer: 'Pied Piper', slackChannel: '#support-general', assignee: 'Lokesh Sharma', status: 'Pending - Roadmap', priority: 'High', due: new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0], created: new Date(Date.now() - 3600000 * 18).toISOString(), notes: 'Waiting on engineering to scope this.', source: 'slack' },
-];
-
-const STORAGE_KEY = 'cs-tracker-v4';
+const defaultRequests = [];
+const STORAGE_KEY = 'cs-tracker-v2';
 function loadRequests() { try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : defaultRequests; } catch { return defaultRequests; } }
 function saveRequests(r) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(r)); } catch {} }
 
