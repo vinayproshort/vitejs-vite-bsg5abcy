@@ -1,6 +1,32 @@
 // @ts-nocheck
 import { useState, useEffect, useRef } from 'react';
 
+const SUPABASE_URL = 'https://cqpfyoxayknsmtvlrlcy.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNxcGZ5b3hheWtuc210dmxybGN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI1MzEzNDQsImV4cCI6MjA4ODEwNzM0NH0.hhavlZ8xg1ByXKPHHdVUPqV1LEgFGqaZQDDMXa9FXhA';
+
+const headers = {
+  'Content-Type': 'application/json',
+  'apikey': SUPABASE_KEY,
+  'Authorization': `Bearer ${SUPABASE_KEY}`,
+  'Prefer': 'return=representation',
+};
+
+async function dbLoad() {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/requests?order=created.desc`, { headers });
+  if (!res.ok) return [];
+  return res.json();
+}
+async function dbInsert(r) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/requests`, { method: 'POST', headers, body: JSON.stringify(r) });
+  return res.json();
+}
+async function dbUpdate(id, fields) {
+  await fetch(`${SUPABASE_URL}/rest/v1/requests?id=eq.${id}`, { method: 'PATCH', headers, body: JSON.stringify(fields) });
+}
+async function dbDelete(id) {
+  await fetch(`${SUPABASE_URL}/rest/v1/requests?id=eq.${id}`, { method: 'DELETE', headers });
+}
+
 const TEAM = ['Vinay Raghavendran', 'Rahul Aggarwal', 'Lokesh Sharma', 'Tech Team'];
 const STATUSES = ['New', 'In Progress', 'Pending - Release', 'Pending - Roadmap', 'Waiting', 'Resolved'];
 const PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
@@ -41,12 +67,7 @@ const PRIORITY_COLORS = {
 };
 
 const PRIORITY_ORDER = { Critical: 0, High: 1, Medium: 2, Low: 3 };
-const generateId = () => Math.random().toString(36).substr(2, 9);
-
-const defaultRequests = [];
-const STORAGE_KEY = 'cs-tracker-v2';
-function loadRequests() { try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : defaultRequests; } catch { return defaultRequests; } }
-function saveRequests(r) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(r)); } catch {} }
+const generateId = () => Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
 
 function timeAgo(iso) {
   const diff = Date.now() - new Date(iso).getTime();
@@ -66,12 +87,17 @@ function dueBadge(due, status) {
   return { label: `${days}d left`, color: B.text3, bg: 'rgba(255,255,255,0.05)' };
 }
 
-const EMPTY_FORM = { title: '', customer: '', slackChannel: '', assignee: TEAM[0], status: 'New', priority: 'Medium', due: new Date(Date.now() + 86400000 * 3).toISOString().split('T')[0], notes: '', source: 'manual' };
-
-const STAT_STATUSES = ['All', ...STATUSES];
+const EMPTY_FORM = {
+  title: '', customer: '', slackChannel: '', assignee: TEAM[0],
+  status: 'New', priority: 'Medium',
+  due: new Date(Date.now() + 86400000 * 3).toISOString().split('T')[0],
+  notes: '', source: 'manual',
+};
 
 export default function App() {
-  const [requests, setRequests] = useState(loadRequests);
+  const [requests, setRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [activeStatus, setActiveStatus] = useState('All');
   const [filter, setFilter] = useState({ assignee: 'All', priority: 'All', search: '' });
   const [showForm, setShowForm] = useState(false);
@@ -79,18 +105,31 @@ export default function App() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [expandedId, setExpandedId] = useState(null);
   const [showWebhook, setShowWebhook] = useState(false);
-  const [sortBy, setSortBy] = useState('priority');
+  const [sortBy, setSortBy] = useState('created');
   const formRef = useRef(null);
 
-  useEffect(() => { saveRequests(requests); }, [requests]);
-  useEffect(() => { if (showForm && formRef.current) formRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, [showForm]);
+  useEffect(() => {
+    dbLoad().then(data => { setRequests(data || []); setLoading(false); });
+    // Poll every 30 seconds for new records from Zapier
+    const interval = setInterval(() => {
+      dbLoad().then(data => setRequests(data || []));
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (showForm && formRef.current) formRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [showForm]);
 
   const filtered = requests
-    .filter((r) => {
+    .filter(r => {
       if (activeStatus !== 'All' && r.status !== activeStatus) return false;
       if (filter.assignee !== 'All' && r.assignee !== filter.assignee) return false;
       if (filter.priority !== 'All' && r.priority !== filter.priority) return false;
-      if (filter.search) { const q = filter.search.toLowerCase(); if (!r.title.toLowerCase().includes(q) && !r.customer.toLowerCase().includes(q)) return false; }
+      if (filter.search) {
+        const q = filter.search.toLowerCase();
+        if (!r.title?.toLowerCase().includes(q) && !r.customer?.toLowerCase().includes(q)) return false;
+      }
       return true;
     })
     .sort((a, b) => {
@@ -99,7 +138,7 @@ export default function App() {
       return new Date(b.created).getTime() - new Date(a.created).getTime();
     });
 
-  const countFor = (s) => s === 'All' ? requests.length : requests.filter(r => r.status === s).length;
+  const countFor = s => s === 'All' ? requests.length : requests.filter(r => r.status === s).length;
 
   const statCards = [
     { label: 'Open', value: requests.filter(r => r.status !== 'Resolved').length, color: B.blue, bg: B.blue05 },
@@ -108,16 +147,37 @@ export default function App() {
     { label: 'Overdue', value: requests.filter(r => r.due && new Date(r.due) < new Date() && r.status !== 'Resolved').length, color: B.orange, bg: B.orange15 },
   ];
 
-  function openAdd() { setForm(EMPTY_FORM); setEditId(null); setShowForm(true); }
-  function openEdit(r) { setForm({ ...r }); setEditId(r.id); setShowForm(true); }
-  function submitForm() {
+  async function openAdd() { setForm(EMPTY_FORM); setEditId(null); setShowForm(true); }
+  async function openEdit(r) { setForm({ ...r }); setEditId(r.id); setShowForm(true); }
+
+  async function submitForm() {
     if (!form.title.trim() || !form.customer.trim()) return;
-    if (editId) { setRequests(prev => prev.map(r => r.id === editId ? { ...form, id: editId } : r)); }
-    else { setRequests(prev => [{ ...form, id: generateId(), created: new Date().toISOString() }, ...prev]); }
-    setShowForm(false); setEditId(null);
+    setSaving(true);
+    if (editId) {
+      await dbUpdate(editId, { ...form });
+      setRequests(prev => prev.map(r => r.id === editId ? { ...form, id: editId } : r));
+    } else {
+      const newRecord = { ...form, id: generateId(), created: new Date().toISOString() };
+      await dbInsert(newRecord);
+      setRequests(prev => [newRecord, ...prev]);
+    }
+    setSaving(false);
+    setShowForm(false);
+    setEditId(null);
+    // Refresh from DB
+    dbLoad().then(data => setRequests(data || []));
   }
-  function deleteReq(id) { setRequests(prev => prev.filter(r => r.id !== id)); if (expandedId === id) setExpandedId(null); }
-  function quickStatus(id, status) { setRequests(prev => prev.map(r => r.id === id ? { ...r, status } : r)); }
+
+  async function deleteReq(id) {
+    await dbDelete(id);
+    setRequests(prev => prev.filter(r => r.id !== id));
+    if (expandedId === id) setExpandedId(null);
+  }
+
+  async function quickStatus(id, status) {
+    await dbUpdate(id, { status });
+    setRequests(prev => prev.map(r => r.id === id ? { ...r, status } : r));
+  }
 
   const inp = { width: '100%', padding: '10px 14px', borderRadius: 8, border: `1.5px solid ${B.border}`, fontFamily: "'Poppins', sans-serif", fontSize: 13, color: B.text, background: B.surface2, outline: 'none' };
   const lbl = { fontSize: 11, fontWeight: 600, color: B.text3, display: 'block', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.07em' };
@@ -139,7 +199,7 @@ export default function App() {
         @keyframes sIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
         .fade { animation: fIn 0.25s ease; }
         @keyframes fIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-        .status-pill { cursor: pointer; border-radius: 20px; padding: 6px 14px; font-size: 12px; font-weight: 600; border: 1.5px solid transparent; transition: all 0.15s; white-space: nowrap; font-family: 'Poppins', sans-serif; }
+        .status-pill { cursor: pointer; border-radius: 20px; padding: 6px 14px; font-size: 12px; font-weight: 600; border: 1.5px solid transparent; transition: all 0.15s; white-space: nowrap; font-family: 'Poppins', sans-serif; background: transparent; }
         .status-pill:hover { filter: brightness(1.2); }
         select option { background: ${B.surface2}; color: ${B.text}; }
         input::placeholder { color: ${B.text3}; }
@@ -155,7 +215,8 @@ export default function App() {
             <div style={{ fontSize: 11, color: B.text3, fontWeight: 400 }}>Slack Request Management</div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          {loading && <span style={{ fontSize: 12, color: B.text3 }}>⟳ Loading...</span>}
           <button className="btn" onClick={() => setShowWebhook(v => !v)} style={{ background: B.blue05, color: B.blue, padding: '9px 16px', fontSize: 13, border: `1.5px solid ${B.blue20}` }}>
             🔗 Webhook Setup
           </button>
@@ -177,22 +238,16 @@ export default function App() {
           ))}
         </div>
 
-        {/* Status Filter Pills */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', overflowX: 'auto', paddingBottom: 4 }}>
-          {STAT_STATUSES.map(s => {
+        {/* Status Pills */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', paddingBottom: 4 }}>
+          {['All', ...STATUSES].map(s => {
             const active = activeStatus === s;
             const sc = STATUS_STYLES[s];
             return (
               <button key={s} className="status-pill" onClick={() => setActiveStatus(s)}
-                style={{
-                  background: active ? (sc ? sc.bg : B.blue05) : 'transparent',
-                  color: active ? (sc ? sc.text : B.blue) : B.text3,
-                  borderColor: active ? (sc ? sc.border : B.blue40) : B.border,
-                }}>
+                style={{ background: active ? (sc ? sc.bg : B.blue05) : 'transparent', color: active ? (sc ? sc.text : B.blue) : B.text3, borderColor: active ? (sc ? sc.border : B.blue40) : B.border }}>
                 {s}
-                <span style={{ marginLeft: 5, fontSize: 11, opacity: 0.7, background: 'rgba(255,255,255,0.08)', borderRadius: 10, padding: '1px 6px' }}>
-                  {countFor(s)}
-                </span>
+                <span style={{ marginLeft: 5, fontSize: 11, opacity: 0.7, background: 'rgba(255,255,255,0.08)', borderRadius: 10, padding: '1px 6px' }}>{countFor(s)}</span>
               </button>
             );
           })}
@@ -201,24 +256,33 @@ export default function App() {
         {/* Webhook Panel */}
         {showWebhook && (
           <div className="card fade" style={{ marginBottom: 22, padding: 24, borderColor: B.blue40, background: B.blue05 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: B.blue, marginBottom: 14 }}>🔗 Slack Webhook Auto-Import Setup</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: B.blue, marginBottom: 14 }}>🔗 Zapier Webhook Setup</div>
             <div style={{ fontSize: 13, color: B.text2, lineHeight: 1.9 }}>
-              <p style={{ marginBottom: 10 }}>Connect a Slack channel so requests auto-populate here:</p>
-              <ol style={{ paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <li>In Slack → <strong style={{ color: B.text }}>Tools → Workflow Builder</strong> → Create Workflow</li>
-                <li>Trigger: <strong style={{ color: B.text }}>When a message is posted in #your-support-channel</strong></li>
-                <li>Add step: <strong style={{ color: B.text }}>Send a webhook</strong> → paste your tracker ingest URL</li>
-                <li>Map: <code style={{ background: B.blue10, padding: '1px 6px', borderRadius: 4, fontSize: 12, color: B.blue }}>message.text</code> → title, <code style={{ background: B.blue10, padding: '1px 6px', borderRadius: 4, fontSize: 12, color: B.blue }}>user.name</code> → customer</li>
-                <li>Or use <strong style={{ color: B.text }}>Zapier / Make</strong>: Slack new message → POST to this app</li>
-              </ol>
-              <div style={{ marginTop: 14, background: B.surface2, borderRadius: 8, padding: '12px 16px', border: `1.5px solid ${B.border}` }}>
-                <div style={{ fontSize: 11, color: B.text3, marginBottom: 6, fontWeight: 600, textTransform: 'uppercase' }}>Example Payload</div>
-                <pre style={{ color: B.blue, fontSize: 12, fontFamily: 'monospace', lineHeight: 1.7 }}>{`{
-  "title": "User can't reset password",
-  "customer": "Acme Corp",
-  "slackChannel": "#support-acme",
-  "priority": "High",
-  "assignee": "Vinay Raghavendran"
+              <p style={{ marginBottom: 10 }}>In Zapier, set the webhook Action to <strong style={{ color: B.text }}>POST</strong> and use this URL:</p>
+              <div style={{ background: B.surface2, borderRadius: 8, padding: '12px 16px', border: `1.5px solid ${B.border}`, marginBottom: 14 }}>
+                <code style={{ color: B.blue, fontSize: 13, wordBreak: 'break-all' }}>{SUPABASE_URL}/rest/v1/requests</code>
+              </div>
+              <p style={{ marginBottom: 8 }}>Add these <strong style={{ color: B.text }}>Headers</strong>:</p>
+              <div style={{ background: B.surface2, borderRadius: 8, padding: '12px 16px', border: `1.5px solid ${B.border}`, marginBottom: 14 }}>
+                <pre style={{ color: B.text2, fontSize: 12, fontFamily: 'monospace', lineHeight: 1.8 }}>{`apikey: ${SUPABASE_KEY}
+Authorization: Bearer ${SUPABASE_KEY}
+Content-Type: application/json
+Prefer: return=minimal`}</pre>
+              </div>
+              <p style={{ marginBottom: 8 }}>Send this <strong style={{ color: B.text }}>JSON body</strong> (map Slack fields):</p>
+              <div style={{ background: B.surface2, borderRadius: 8, padding: '12px 16px', border: `1.5px solid ${B.border}` }}>
+                <pre style={{ color: B.blue, fontSize: 12, fontFamily: 'monospace', lineHeight: 1.8 }}>{`{
+  "id": "<unique_id>",
+  "title": "<slack message text>",
+  "customer": "<slack username>",
+  "slackChannel": "<channel name>",
+  "priority": "Medium",
+  "status": "New",
+  "assignee": "Vinay Raghavendran",
+  "source": "slack",
+  "notes": "",
+  "due": "",
+  "created": "<timestamp>"
 }`}</pre>
               </div>
             </div>
@@ -244,10 +308,14 @@ export default function App() {
             </select>
           ))}
           <select className="inp" value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ ...inp, width: 'auto', cursor: 'pointer' }}>
+            <option value="created">Sort: Newest</option>
             <option value="priority">Sort: Priority</option>
             <option value="due">Sort: Due Date</option>
-            <option value="created">Sort: Newest</option>
           </select>
+          <button className="btn" onClick={() => dbLoad().then(data => setRequests(data || []))}
+            style={{ background: B.surface2, color: B.text2, padding: '9px 14px', fontSize: 13, border: `1.5px solid ${B.border}` }}>
+            ↻ Refresh
+          </button>
         </div>
 
         {/* Form */}
@@ -305,103 +373,114 @@ export default function App() {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
-              <button className="btn" onClick={submitForm} style={{ background: B.blue, color: '#fff', padding: '10px 22px', fontSize: 14, boxShadow: `0 4px 14px ${B.blue40}` }}>
-                {editId ? 'Save Changes' : 'Add Request'}
+              <button className="btn" onClick={submitForm} disabled={saving}
+                style={{ background: B.blue, color: '#fff', padding: '10px 22px', fontSize: 14, boxShadow: `0 4px 14px ${B.blue40}`, opacity: saving ? 0.7 : 1 }}>
+                {saving ? 'Saving...' : editId ? 'Save Changes' : 'Add Request'}
               </button>
-              <button className="btn" onClick={() => { setShowForm(false); setEditId(null); }} style={{ background: B.surface2, color: B.text2, padding: '10px 18px', fontSize: 14, border: `1.5px solid ${B.border}` }}>
+              <button className="btn" onClick={() => { setShowForm(false); setEditId(null); }}
+                style={{ background: B.surface2, color: B.text2, padding: '10px 18px', fontSize: 14, border: `1.5px solid ${B.border}` }}>
                 Cancel
               </button>
             </div>
           </div>
         )}
 
-        {/* Request List */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {filtered.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '64px 0', color: B.text3 }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>📭</div>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>No requests match your filters</div>
-            </div>
-          )}
-          {filtered.map(r => {
-            const sc = STATUS_STYLES[r.status] || STATUS_STYLES['New'];
-            const pc = PRIORITY_COLORS[r.priority] || B.text3;
-            const due = dueBadge(r.due, r.status);
-            const isExp = expandedId === r.id;
-            return (
-              <div key={r.id} className="card row-in" style={{ overflow: 'hidden' }}>
-                <div style={{ padding: '15px 20px', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }} onClick={() => setExpandedId(isExp ? null : r.id)}>
-                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: pc, flexShrink: 0, boxShadow: `0 0 0 3px ${pc}30` }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3, flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 600, fontSize: 14, color: r.status === 'Resolved' ? B.text3 : B.text, textDecoration: r.status === 'Resolved' ? 'line-through' : 'none' }}>
-                        {r.title}
-                      </span>
-                      {r.source === 'slack' && (
-                        <span style={{ fontSize: 10, background: B.blue05, color: B.blue, padding: '2px 8px', borderRadius: 20, fontWeight: 600, border: `1px solid ${B.blue20}` }}>⚡ slack</span>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <span style={{ fontSize: 12, color: B.text2, fontWeight: 500 }}>{r.customer}</span>
-                      {r.slackChannel && <span style={{ fontSize: 11, color: B.text3 }}>{r.slackChannel}</span>}
-                      <span style={{ fontSize: 11, color: B.text3 }}>· {timeAgo(r.created)}</span>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    <span className="tag" style={{ background: sc.bg, color: sc.text, border: `1.5px solid ${sc.border}` }}>
-                      <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: sc.dot, marginRight: 5 }} />
-                      {r.status}
-                    </span>
-                    <span className="tag" style={{ background: `${pc}18`, color: pc, border: `1.5px solid ${pc}35` }}>{r.priority}</span>
-                    <span style={{ fontSize: 12, color: B.text2, fontWeight: 500, minWidth: 64, textAlign: 'right' }}>👤 {r.assignee}</span>
-                    {due && <span className="tag" style={{ background: due.bg, color: due.color, border: `1.5px solid ${due.color}35` }}>{due.label}</span>}
-                    <span style={{ color: B.text3, fontSize: 11, marginLeft: 4 }}>{isExp ? '▲' : '▼'}</span>
-                  </div>
-                </div>
+        {/* Loading state */}
+        {loading && (
+          <div style={{ textAlign: 'center', padding: '64px 0', color: B.text3 }}>
+            <div style={{ fontSize: 24, marginBottom: 12 }}>⟳</div>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>Loading requests...</div>
+          </div>
+        )}
 
-                {isExp && (
-                  <div className="fade" style={{ borderTop: `1.5px solid ${B.border}`, padding: '18px 20px 20px', background: B.surface2 }}>
-                    <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-                      <div style={{ flex: 1, minWidth: 220 }}>
-                        {r.notes && (
-                          <div style={{ marginBottom: 14 }}>
-                            <div style={lbl}>Notes / Context</div>
-                            <div style={{ fontSize: 13, color: B.text2, background: B.surface, padding: '12px 16px', borderRadius: 8, border: `1.5px solid ${B.border}`, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{r.notes}</div>
-                          </div>
+        {/* Request List */}
+        {!loading && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {filtered.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '64px 0', color: B.text3 }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>📭</div>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>No requests found</div>
+              </div>
+            )}
+            {filtered.map(r => {
+              const sc = STATUS_STYLES[r.status] || STATUS_STYLES['New'];
+              const pc = PRIORITY_COLORS[r.priority] || B.text3;
+              const due = dueBadge(r.due, r.status);
+              const isExp = expandedId === r.id;
+              return (
+                <div key={r.id} className="card row-in" style={{ overflow: 'hidden' }}>
+                  <div style={{ padding: '15px 20px', display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer' }} onClick={() => setExpandedId(isExp ? null : r.id)}>
+                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: pc, flexShrink: 0, boxShadow: `0 0 0 3px ${pc}30` }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3, flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 600, fontSize: 14, color: r.status === 'Resolved' ? B.text3 : B.text, textDecoration: r.status === 'Resolved' ? 'line-through' : 'none' }}>
+                          {r.title}
+                        </span>
+                        {r.source === 'slack' && (
+                          <span style={{ fontSize: 10, background: B.blue05, color: B.blue, padding: '2px 8px', borderRadius: 20, fontWeight: 600, border: `1px solid ${B.blue20}` }}>⚡ slack</span>
                         )}
-                        <div style={{ fontSize: 12, color: B.text3 }}>
-                          Due: <span style={{ color: B.text2, fontWeight: 500 }}>{r.due || '—'}</span>
-                          {' · '}Created: <span style={{ color: B.text2, fontWeight: 500 }}>{new Date(r.created).toLocaleDateString()}</span>
-                        </div>
                       </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 200 }}>
-                        <div style={lbl}>Quick Status</div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                          {STATUSES.map(s => {
-                            const active = r.status === s;
-                            return (
-                              <button key={s} className="btn" onClick={() => quickStatus(r.id, s)}
-                                style={{ fontSize: 12, padding: '6px 12px', background: active ? B.blue : B.surface, color: active ? '#fff' : B.text2, border: `1.5px solid ${active ? B.blue : B.border}`, fontWeight: active ? 600 : 500 }}>
-                                {s}
-                              </button>
-                            );
-                          })}
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <span style={{ fontSize: 12, color: B.text2, fontWeight: 500 }}>{r.customer}</span>
+                        {r.slackChannel && <span style={{ fontSize: 11, color: B.text3 }}>{r.slackChannel}</span>}
+                        <span style={{ fontSize: 11, color: B.text3 }}>· {timeAgo(r.created)}</span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <span className="tag" style={{ background: sc.bg, color: sc.text, border: `1.5px solid ${sc.border}` }}>
+                        <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: sc.dot, marginRight: 5 }} />{r.status}
+                      </span>
+                      <span className="tag" style={{ background: `${pc}18`, color: pc, border: `1.5px solid ${pc}35` }}>{r.priority}</span>
+                      <span style={{ fontSize: 12, color: B.text2, fontWeight: 500, minWidth: 64, textAlign: 'right' }}>👤 {r.assignee}</span>
+                      {due && <span className="tag" style={{ background: due.bg, color: due.color, border: `1.5px solid ${due.color}35` }}>{due.label}</span>}
+                      <span style={{ color: B.text3, fontSize: 11, marginLeft: 4 }}>{isExp ? '▲' : '▼'}</span>
+                    </div>
+                  </div>
+
+                  {isExp && (
+                    <div className="fade" style={{ borderTop: `1.5px solid ${B.border}`, padding: '18px 20px 20px', background: B.surface2 }}>
+                      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+                        <div style={{ flex: 1, minWidth: 220 }}>
+                          {r.notes && (
+                            <div style={{ marginBottom: 14 }}>
+                              <div style={lbl}>Notes / Context</div>
+                              <div style={{ fontSize: 13, color: B.text2, background: B.surface, padding: '12px 16px', borderRadius: 8, border: `1.5px solid ${B.border}`, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{r.notes}</div>
+                            </div>
+                          )}
+                          <div style={{ fontSize: 12, color: B.text3 }}>
+                            Due: <span style={{ color: B.text2, fontWeight: 500 }}>{r.due || '—'}</span>
+                            {' · '}Created: <span style={{ color: B.text2, fontWeight: 500 }}>{new Date(r.created).toLocaleDateString()}</span>
+                          </div>
                         </div>
-                        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                          <button className="btn" onClick={() => openEdit(r)} style={{ fontSize: 12, padding: '7px 14px', background: B.blue05, color: B.blue, border: `1.5px solid ${B.blue20}` }}>✏️ Edit</button>
-                          <button className="btn" onClick={() => deleteReq(r.id)} style={{ fontSize: 12, padding: '7px 12px', background: 'rgba(248,113,113,0.08)', color: '#f87171', border: '1.5px solid rgba(248,113,113,0.2)' }}>🗑 Delete</button>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 200 }}>
+                          <div style={lbl}>Quick Status</div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {STATUSES.map(s => {
+                              const active = r.status === s;
+                              return (
+                                <button key={s} className="btn" onClick={() => quickStatus(r.id, s)}
+                                  style={{ fontSize: 12, padding: '6px 12px', background: active ? B.blue : B.surface, color: active ? '#fff' : B.text2, border: `1.5px solid ${active ? B.blue : B.border}`, fontWeight: active ? 600 : 500 }}>
+                                  {s}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                            <button className="btn" onClick={() => openEdit(r)} style={{ fontSize: 12, padding: '7px 14px', background: B.blue05, color: B.blue, border: `1.5px solid ${B.blue20}` }}>✏️ Edit</button>
+                            <button className="btn" onClick={() => deleteReq(r.id)} style={{ fontSize: 12, padding: '7px 12px', background: 'rgba(248,113,113,0.08)', color: '#f87171', border: '1.5px solid rgba(248,113,113,0.2)' }}>🗑 Delete</button>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div style={{ marginTop: 32, textAlign: 'center', fontSize: 12, color: B.text3, fontWeight: 500 }}>
-          {filtered.length} of {requests.length} requests · CS Tracker
+          {filtered.length} of {requests.length} requests · CS Tracker · Live from Supabase
         </div>
       </div>
     </div>
